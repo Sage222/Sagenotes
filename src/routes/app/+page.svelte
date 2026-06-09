@@ -1,76 +1,166 @@
 <script lang="ts">
-  export let data: { notes: { id: string; title: string; updatedAt: string }[]; q: string; username: string };
+  export let data: { notes: any[]; q: string; username: string };
 
+  // ── State ──────────────────────────────────────────────
   let notes = data.notes;
   let selectedId: string | null = notes[0]?.id ?? null;
+  let expanded: Record<string, boolean> = {};
+
   let title = '';
-  let content = '';
-  let preview = false;
+  let tabs: any[] = [];
+  let activeTabId: string | null = null;
+  let tabContent = '';
+
   let saving = false;
   let saveTimer: ReturnType<typeof setTimeout>;
+  let searchQ = data.q;
 
+  // ── Load note ──────────────────────────────────────────
   async function loadNote(id: string) {
     const res = await fetch(`/api/notes/${id}`);
     const note = await res.json();
     title = note.title;
-    content = note.content;
+    tabs = note.tabs ?? [];
+    if (tabs.length === 0) {
+      // create default tab
+      const t = await fetch('/api/tabs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ noteId: id, name: 'Main' })
+      }).then(r => r.json());
+      tabs = [t];
+    }
+    activeTabId = tabs[0]?.id ?? null;
+    tabContent = tabs.find(t => t.id === activeTabId)?.content ?? '';
   }
 
   $: if (selectedId) loadNote(selectedId);
 
-  async function createNote() {
-    const res = await fetch('/api/notes', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'Untitled', content: '' })
-    });
-    const note = await res.json();
-    notes = [note, ...notes];
-    selectedId = note.id;
-    title = note.title;
-    content = note.content;
+  function selectTab(id: string) {
+    saveTabNow();
+    activeTabId = id;
+    tabContent = tabs.find(t => t.id === id)?.content ?? '';
   }
 
+  // ── Save ───────────────────────────────────────────────
   function queueSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveCurrent, 500);
+    saveTimer = setTimeout(saveAll, 600);
   }
 
-  async function saveCurrent() {
+  async function saveAll() {
     if (!selectedId) return;
     saving = true;
-    const res = await fetch('/api/notes', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: selectedId, title, content })
-    });
-    const updated = await res.json();
-    notes = notes
-      .map((n) => n.id === updated.id ? { ...n, title: updated.title, updatedAt: updated.updatedAt } : n)
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    await Promise.all([
+      fetch('/api/notes', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: selectedId, title, content: tabContent })
+      }),
+      activeTabId ? fetch('/api/tabs', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: activeTabId, content: tabContent })
+      }) : Promise.resolve()
+    ]);
+    notes = notes.map(n => n.id === selectedId ? { ...n, title } : n);
     saving = false;
   }
 
+  async function saveTabNow() {
+    if (!activeTabId) return;
+    await fetch('/api/tabs', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: activeTabId, content: tabContent })
+    });
+    tabs = tabs.map(t => t.id === activeTabId ? { ...t, content: tabContent } : t);
+  }
+
+  // ── Create note / sub-note ────────────────────────────
+  async function createNote(parentId: string | null = null) {
+    const res = await fetch('/api/notes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Untitled', content: '', parentId })
+    });
+    const note = await res.json();
+    if (parentId) {
+      notes = notes.map(n => n.id === parentId
+        ? { ...n, children: [note, ...(n.children ?? [])] }
+        : n);
+      expanded[parentId] = true;
+    } else {
+      notes = [{ ...note, children: [] }, ...notes];
+    }
+    selectedId = note.id;
+  }
+
+  // ── Delete note ───────────────────────────────────────
   async function removeNote() {
-    if (!selectedId || !confirm('Delete this note?')) return;
+    if (!selectedId || !confirm('Delete this note and all its subnotes?')) return;
     await fetch('/api/notes', {
       method: 'DELETE',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id: selectedId })
     });
-    notes = notes.filter((n) => n.id !== selectedId);
+    notes = notes.filter(n => n.id !== selectedId).map(n => ({
+      ...n, children: (n.children ?? []).filter((c: any) => c.id !== selectedId)
+    }));
     selectedId = notes[0]?.id ?? null;
-    if (selectedId) { loadNote(selectedId); } else { title = ''; content = ''; }
+    if (!selectedId) { title = ''; tabs = []; tabContent = ''; }
   }
 
-  function selectNote(id: string) { selectedId = id; }
+  // ── Add tab ───────────────────────────────────────────
+  async function addTab() {
+    if (!selectedId) return;
+    await saveTabNow();
+    const name = prompt('Tab name:', `Tab ${tabs.length + 1}`);
+    if (!name) return;
+    const t = await fetch('/api/tabs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ noteId: selectedId, name })
+    }).then(r => r.json());
+    tabs = [...tabs, t];
+    activeTabId = t.id;
+    tabContent = '';
+  }
 
+  async function removeTab(id: string) {
+    if (tabs.length <= 1) { alert("Can't delete the last tab."); return; }
+    if (!confirm('Delete this tab?')) return;
+    await fetch('/api/tabs', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    tabs = tabs.filter(t => t.id !== id);
+    if (activeTabId === id) {
+      activeTabId = tabs[0].id;
+      tabContent = tabs[0].content;
+    }
+  }
+
+  // ── Search ────────────────────────────────────────────
+  function doSearch() {
+    const url = searchQ.trim() ? `/app?q=${encodeURIComponent(searchQ.trim())}` : '/app';
+    window.location.href = url;
+  }
+
+  function handleSearchKey(e: KeyboardEvent) {
+    if (e.key === 'Enter') doSearch();
+    if (e.key === 'Escape') { searchQ = ''; doSearch(); }
+  }
+
+  // ── Helpers ───────────────────────────────────────────
   function formatDate(value: string) {
-    return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
-  import { marked } from 'marked';
-  $: renderedContent = marked.parse(content || '');
+  function toggleExpand(id: string) {
+    expanded[id] = !expanded[id];
+  }
 </script>
 
 <svelte:head>
@@ -84,7 +174,7 @@
 </svelte:head>
 
 <div class="shell">
-  <!-- Sidebar -->
+  <!-- ── Sidebar ── -->
   <aside class="sidebar">
     <div class="sidebar-brand">
       <svg class="brand-icon" viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -92,45 +182,84 @@
         <path d="M13 10h13M13 16h15M13 22h9"/>
       </svg>
       <span class="brand-name">SageNotes</span>
-      <button class="btn-icon" on:click={createNote} aria-label="New note" title="New note">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+      <button class="btn-icon" on:click={() => createNote(null)} aria-label="New note" title="New note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
       </button>
     </div>
 
-    <form method="GET" action="/app" class="search-form">
+    <div class="search-wrap">
       <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-      <input name="q" value={data.q} placeholder="Search notes…" aria-label="Search notes" />
-    </form>
+      <input
+        bind:value={searchQ}
+        on:keydown={handleSearchKey}
+        placeholder="Search notes…"
+        aria-label="Search notes"
+      />
+      {#if searchQ}
+        <button class="search-clear" on:click={() => { searchQ = ''; doSearch(); }} aria-label="Clear search">×</button>
+      {/if}
+    </div>
 
     <nav class="note-list" aria-label="Notes">
       {#each notes as note (note.id)}
-        <button
-          class="note-item"
-          class:active={note.id === selectedId}
-          on:click={() => selectNote(note.id)}
-          aria-current={note.id === selectedId ? 'page' : undefined}
-        >
-          <span class="note-title">{note.title || 'Untitled'}</span>
-          <span class="note-date">{formatDate(note.updatedAt)}</span>
-        </button>
+        <div class="note-group">
+          <div class="note-row" class:active={note.id === selectedId}>
+            {#if note.children?.length > 0}
+              <button class="chevron" on:click={() => toggleExpand(note.id)} aria-label="Toggle subnotes">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="transform: rotate({expanded[note.id] ? 90 : 0}deg); transition: transform 150ms">
+                  <path d="M9 18l6-6-6-6"/>
+                </svg>
+              </button>
+            {:else}
+              <span class="chevron-placeholder"></span>
+            {/if}
+            <button class="note-item" on:click={() => (selectedId = note.id)} aria-current={note.id === selectedId ? 'page' : undefined}>
+              <span class="note-title">{note.title || 'Untitled'}</span>
+              <span class="note-date">{formatDate(note.updatedAt)}</span>
+            </button>
+            <button class="btn-add-sub" on:click={() => createNote(note.id)} aria-label="Add subnote" title="Add subnote">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </div>
+
+          {#if expanded[note.id] && note.children?.length > 0}
+            <div class="subnotes">
+              {#each note.children as child (child.id)}
+                <button
+                  class="note-item sub"
+                  class:active={child.id === selectedId}
+                  on:click={() => (selectedId = child.id)}
+                  aria-current={child.id === selectedId ? 'page' : undefined}
+                >
+                  <span class="sub-dot" aria-hidden="true"></span>
+                  <span class="note-title">{child.title || 'Untitled'}</span>
+                  <span class="note-date">{formatDate(child.updatedAt)}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
       {/each}
+
       {#if notes.length === 0}
         <div class="empty-list">
-          <p>No notes found.</p>
-          {#if data.q}<a href="/app">Clear search</a>{:else}<button class="link" on:click={createNote}>Create your first note</button>{/if}
+          <p>{data.q ? `No results for "${data.q}"` : 'No notes yet.'}</p>
+          {#if data.q}
+            <button class="link" on:click={() => { searchQ = ''; doSearch(); }}>Clear search</button>
+          {:else}
+            <button class="link" on:click={() => createNote(null)}>Create your first note</button>
+          {/if}
         </div>
       {/if}
     </nav>
 
     <div class="sidebar-footer">
       <span class="username">{data.username}</span>
-      <form method="POST" action="/logout">
-        <button type="submit" class="logout-btn">Log out</button>
-      </form>
+      <a href="/logout" class="logout-btn">Log out</a>
     </div>
   </aside>
 
-  <!-- Editor -->
+  <!-- ── Editor ── -->
   <main class="editor-pane">
     {#if selectedId}
       <div class="editor-header">
@@ -142,28 +271,34 @@
           aria-label="Note title"
         />
         <div class="editor-actions">
-          <span class="save-status" aria-live="polite">{saving ? 'Saving…' : 'Saved'}</span>
-          <button class="btn-ghost" on:click={() => (preview = !preview)}>
-            {preview ? 'Edit' : 'Preview'}
-          </button>
-          <button class="btn-danger" on:click={removeNote} aria-label="Delete note">
+          <span class="save-status" aria-live="polite">{saving ? 'Saving…' : ''}</span>
+          <button class="btn-danger" on:click={removeNote} aria-label="Delete note" title="Delete note">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
           </button>
         </div>
       </div>
 
+      <!-- Tabs bar -->
+      <div class="tabs-bar">
+        {#each tabs as tab (tab.id)}
+          <div class="tab-wrap" class:tab-active={tab.id === activeTabId}>
+            <button class="tab-btn" on:click={() => selectTab(tab.id)}>{tab.name}</button>
+            {#if tabs.length > 1}
+              <button class="tab-close" on:click={() => removeTab(tab.id)} aria-label="Close tab">×</button>
+            {/if}
+          </div>
+        {/each}
+        <button class="tab-add" on:click={addTab} aria-label="Add tab" title="New tab">+</button>
+      </div>
+
       <div class="editor-body">
-        {#if preview}
-          <article class="prose">{@html renderedContent}</article>
-        {:else}
-          <textarea
-            bind:value={content}
-            on:input={queueSave}
-            placeholder="Start writing…"
-            aria-label="Note content"
-            spellcheck="true"
-          ></textarea>
-        {/if}
+        <textarea
+          bind:value={tabContent}
+          on:input={queueSave}
+          placeholder="Start writing…"
+          aria-label="Note content"
+          spellcheck="true"
+        ></textarea>
       </div>
     {:else}
       <div class="no-note">
@@ -174,8 +309,8 @@
           </svg>
         </div>
         <h2>No note selected</h2>
-        <p>Select a note from the sidebar or create a new one.</p>
-        <button class="btn-primary" on:click={createNote}>New note</button>
+        <p>Pick a note from the sidebar or create a new one.</p>
+        <button class="btn-primary" on:click={() => createNote(null)}>New note</button>
       </div>
     {/if}
   </main>
@@ -183,185 +318,146 @@
 
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :global(html) { height: 100%; }
-  :global(body) { margin: 0; height: 100%; font-family: 'Inter', system-ui, sans-serif; background: #171614; color: #cdccca; -webkit-font-smoothing: antialiased; }
+  :global(html, body) { height: 100%; margin: 0; font-family: 'Inter', system-ui, sans-serif;
+    background: #171614; color: #cdccca; -webkit-font-smoothing: antialiased; }
 
-  .shell {
-    display: grid;
-    grid-template-columns: 300px 1fr;
-    height: 100dvh;
-    overflow: hidden;
-  }
+  .shell { display: grid; grid-template-columns: 290px 1fr; height: 100dvh; overflow: hidden; }
 
   /* ── Sidebar ── */
-  .sidebar {
-    background: #1c1b19;
-    border-right: 1px solid #2a2927;
-    display: grid;
-    grid-template-rows: auto auto 1fr auto;
-    overflow: hidden;
-  }
+  .sidebar { background: #1c1b19; border-right: 1px solid #252422;
+    display: grid; grid-template-rows: auto auto 1fr auto; overflow: hidden; }
 
-  .sidebar-brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 18px 16px 14px;
-    border-bottom: 1px solid #252422;
-  }
+  .sidebar-brand { display: flex; align-items: center; gap: 10px;
+    padding: 16px 14px 12px; border-bottom: 1px solid #252422; }
   .brand-icon { width: 22px; height: 22px; color: #4f98a3; flex-shrink: 0; }
-  .brand-name { font-size: 1rem; font-weight: 700; color: #e2e1de; flex: 1; }
+  .brand-name { font-size: 0.95rem; font-weight: 700; color: #e2e1de; flex: 1; }
 
-  .btn-icon {
-    width: 32px; height: 32px; border-radius: 8px; border: 1px solid #393836;
-    background: #252422; color: #cdccca; cursor: pointer;
-    display: grid; place-items: center; flex-shrink: 0;
-    transition: background 150ms, border-color 150ms;
-  }
+  .btn-icon { width: 30px; height: 30px; border-radius: 7px; border: 1px solid #393836;
+    background: #252422; color: #cdccca; cursor: pointer; display: grid; place-items: center; flex-shrink: 0;
+    transition: background 140ms, border-color 140ms; }
   .btn-icon:hover { background: #2d2c2a; border-color: #4f98a3; color: #4f98a3; }
-  .btn-icon svg { width: 16px; height: 16px; }
+  .btn-icon svg { width: 14px; height: 14px; }
 
-  .search-form {
-    position: relative;
-    padding: 12px 14px;
-    border-bottom: 1px solid #252422;
-  }
-  .search-icon {
-    position: absolute; left: 26px; top: 50%; transform: translateY(-50%);
-    width: 15px; height: 15px; color: #555350; pointer-events: none;
-  }
-  .search-form input {
-    width: 100%; padding: 9px 12px 9px 34px;
-    border: 1px solid #393836; border-radius: 10px;
-    background: #222120; color: #cdccca; font: inherit; font-size: 0.875rem;
-    outline: none; transition: border-color 150ms, box-shadow 150ms;
-  }
-  .search-form input:focus { border-color: #4f98a3; box-shadow: 0 0 0 3px rgba(79,152,163,.15); }
-  .search-form input::placeholder { color: #555350; }
+  /* Search */
+  .search-wrap { position: relative; padding: 10px 12px; border-bottom: 1px solid #252422; }
+  .search-icon { position: absolute; left: 24px; top: 50%; transform: translateY(-50%);
+    width: 14px; height: 14px; color: #555350; pointer-events: none; }
+  .search-wrap input { width: 100%; padding: 8px 28px 8px 32px; border: 1px solid #393836;
+    border-radius: 8px; background: #222120; color: #cdccca; font: inherit; font-size: 0.85rem;
+    outline: none; transition: border-color 140ms, box-shadow 140ms; }
+  .search-wrap input:focus { border-color: #4f98a3; box-shadow: 0 0 0 3px rgba(79,152,163,.15); }
+  .search-wrap input::placeholder { color: #555350; }
+  .search-clear { position: absolute; right: 20px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: #555350; cursor: pointer; font-size: 1.1rem; padding: 2px 4px;
+    line-height: 1; }
+  .search-clear:hover { color: #cdccca; }
 
-  .note-list { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
-  .note-item {
-    width: 100%; padding: 10px 12px; border-radius: 10px;
-    border: 1px solid transparent; background: transparent;
-    color: #cdccca; text-align: left; cursor: pointer;
-    display: flex; flex-direction: column; gap: 3px;
-    transition: background 120ms, border-color 120ms;
-  }
-  .note-item:hover { background: #222120; }
-  .note-item.active { background: #1e2e30; border-color: rgba(79,152,163,.35); }
-  .note-title { font-size: 0.9rem; font-weight: 600; color: #e2e1de; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Note list */
+  .note-list { overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 1px; }
+
+  .note-group { display: flex; flex-direction: column; }
+
+  .note-row { display: flex; align-items: center; gap: 2px; border-radius: 8px;
+    transition: background 120ms; }
+  .note-row:hover { background: #222120; }
+  .note-row.active { background: #1e2e30; }
+
+  .chevron { width: 22px; height: 22px; flex-shrink: 0; display: grid; place-items: center;
+    background: none; border: none; color: #555350; cursor: pointer; padding: 0; border-radius: 4px; }
+  .chevron:hover { color: #cdccca; }
+  .chevron svg { width: 12px; height: 12px; }
+  .chevron-placeholder { width: 22px; flex-shrink: 0; }
+
+  .note-item { flex: 1; padding: 8px 4px 8px 2px; background: transparent; border: none;
+    color: #cdccca; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
+    min-width: 0; }
+  .note-item.sub { padding-left: 6px; }
+
+  .btn-add-sub { width: 22px; height: 22px; flex-shrink: 0; display: grid; place-items: center;
+    background: none; border: none; color: #444; cursor: pointer; padding: 0; border-radius: 4px;
+    opacity: 0; transition: opacity 140ms, color 140ms; }
+  .note-row:hover .btn-add-sub { opacity: 1; }
+  .btn-add-sub:hover { color: #4f98a3; }
+  .btn-add-sub svg { width: 11px; height: 11px; }
+
+  .note-title { font-size: 0.875rem; font-weight: 500; color: #d8d7d4;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .note-row.active .note-title { color: #7fc4cc; }
   .note-item.active .note-title { color: #7fc4cc; }
-  .note-date { font-size: 0.75rem; color: #636260; }
+  .note-date { font-size: 0.72rem; color: #525150; }
 
-  .empty-list { padding: 24px 12px; text-align: center; color: #636260; font-size: 0.875rem; display: grid; gap: 10px; }
-  .empty-list a, .link { color: #4f98a3; background: none; border: none; cursor: pointer; font: inherit; font-size: inherit; text-decoration: underline; padding: 0; }
+  .subnotes { padding-left: 22px; display: flex; flex-direction: column; gap: 1px; }
+  .sub-dot { width: 5px; height: 5px; border-radius: 50%; background: #444; flex-shrink: 0; margin-top: 2px; }
 
-  .sidebar-footer {
-    padding: 12px 16px;
-    border-top: 1px solid #252422;
-    display: flex; align-items: center; justify-content: space-between;
-  }
-  .username { font-size: 0.8rem; color: #555350; }
-  .logout-btn {
-    font-size: 0.8rem; color: #636260; background: none; border: none; cursor: pointer;
-    padding: 6px 10px; border-radius: 8px; transition: color 150ms, background 150ms;
-  }
-  .logout-btn:hover { color: #cdccca; background: #252422; }
+  .empty-list { padding: 20px 10px; text-align: center; color: #555350; font-size: 0.85rem; display: grid; gap: 8px; }
+  .link { color: #4f98a3; background: none; border: none; cursor: pointer; font: inherit;
+    font-size: inherit; text-decoration: underline; padding: 0; }
+
+  .sidebar-footer { padding: 10px 14px; border-top: 1px solid #252422;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .username { font-size: 0.8rem; color: #636260; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .logout-btn { font-size: 0.8rem; color: #636260; text-decoration: none; background: none; border: none;
+    cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background 140ms, color 140ms;
+    white-space: nowrap; }
+  .logout-btn:hover { background: #252422; color: #cdccca; }
 
   /* ── Editor ── */
-  .editor-pane {
-    display: grid;
-    grid-template-rows: auto 1fr;
-    background: #171614;
-    overflow: hidden;
-  }
+  .editor-pane { display: flex; flex-direction: column; overflow: hidden; background: #171614; }
 
-  .editor-header {
-    display: flex; align-items: center; gap: 16px;
-    padding: 16px 28px 12px;
-    border-bottom: 1px solid #252422;
-    flex-shrink: 0;
-  }
-  .title-input {
-    flex: 1; min-width: 0;
-    font: inherit; font-size: 1.35rem; font-weight: 700; color: #e8e7e4;
-    background: transparent; border: none; outline: none;
-    padding: 4px 0;
-  }
-  .title-input::placeholder { color: #393836; }
+  .editor-header { display: flex; align-items: center; gap: 10px;
+    padding: 14px 20px 10px; border-bottom: 1px solid #222120; }
+  .title-input { flex: 1; background: transparent; border: none; color: #e8e7e4;
+    font: 600 1.15rem/1.3 'Inter', sans-serif; outline: none; min-width: 0; }
+  .title-input::placeholder { color: #3a3938; }
 
-  .editor-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-  .save-status { font-size: 0.78rem; color: #555350; min-width: 48px; text-align: right; }
+  .editor-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .save-status { font-size: 0.75rem; color: #4f98a3; min-width: 50px; text-align: right; }
 
-  .btn-ghost {
-    padding: 7px 14px; border-radius: 9px;
-    border: 1px solid #393836; background: #1f1e1c; color: #9a9995;
-    font: inherit; font-size: 0.85rem; cursor: pointer;
-    transition: background 150ms, color 150ms;
-  }
-  .btn-ghost:hover { background: #252422; color: #cdccca; }
+  .btn-danger { width: 32px; height: 32px; border-radius: 7px; border: 1px solid #393836;
+    background: transparent; color: #636260; cursor: pointer; display: grid; place-items: center;
+    transition: background 140ms, color 140ms, border-color 140ms; }
+  .btn-danger:hover { background: #3a1a1a; border-color: #7a2020; color: #e06060; }
+  .btn-danger svg { width: 15px; height: 15px; }
 
-  .btn-danger {
-    width: 34px; height: 34px; border-radius: 9px;
-    border: 1px solid #393836; background: #1f1e1c; color: #9a9995;
-    cursor: pointer; display: grid; place-items: center;
-    transition: background 150ms, color 150ms, border-color 150ms;
-  }
-  .btn-danger svg { width: 16px; height: 16px; }
-  .btn-danger:hover { background: rgba(209,99,167,.12); border-color: rgba(209,99,167,.3); color: #e8a8cc; }
+  /* Tabs */
+  .tabs-bar { display: flex; align-items: center; gap: 2px; padding: 0 16px;
+    border-bottom: 1px solid #222120; background: #1a1917; overflow-x: auto;
+    scrollbar-width: none; min-height: 38px; }
+  .tabs-bar::-webkit-scrollbar { display: none; }
 
-  .editor-body { overflow: hidden; display: grid; }
+  .tab-wrap { display: flex; align-items: center; border-radius: 6px 6px 0 0;
+    border: 1px solid transparent; border-bottom: none; transition: background 140ms, border-color 140ms; }
+  .tab-wrap.tab-active { background: #171614; border-color: #2a2927; border-bottom-color: #171614; }
+  .tab-wrap:not(.tab-active):hover { background: #202020; }
 
-  textarea {
-    width: 100%; height: 100%;
-    padding: 24px 32px;
-    background: transparent; border: none; outline: none; resize: none;
-    font: inherit; font-size: 1rem; line-height: 1.75; color: #cdccca;
-    tab-size: 2;
-  }
-  textarea::placeholder { color: #393836; }
+  .tab-btn { padding: 6px 12px; background: none; border: none; color: #797876; cursor: pointer;
+    font: 500 0.8rem 'Inter', sans-serif; white-space: nowrap; transition: color 140ms; }
+  .tab-wrap.tab-active .tab-btn { color: #d8d7d4; }
+  .tab-btn:hover { color: #cdccca; }
 
-  .prose {
-    padding: 24px 32px;
-    overflow-y: auto;
-    font-size: 1rem; line-height: 1.75; color: #cdccca;
-  }
-  .prose :global(h1) { font-size: 1.75rem; font-weight: 700; color: #e8e7e4; margin-bottom: 12px; }
-  .prose :global(h2) { font-size: 1.35rem; font-weight: 700; color: #e2e1de; margin: 24px 0 10px; }
-  .prose :global(h3) { font-size: 1.1rem; font-weight: 600; color: #d8d7d4; margin: 20px 0 8px; }
-  .prose :global(p) { margin-bottom: 14px; max-width: 72ch; }
-  .prose :global(li) { max-width: 70ch; margin-bottom: 4px; }
-  .prose :global(ul), .prose :global(ol) { padding-left: 20px; margin-bottom: 14px; }
-  .prose :global(code) { background: #252422; border-radius: 6px; padding: 2px 6px; font-size: .9em; color: #7fc4cc; }
-  .prose :global(pre) { background: #1c1b19; border: 1px solid #2a2927; border-radius: 12px; padding: 16px 20px; overflow-x: auto; margin-bottom: 14px; }
-  .prose :global(blockquote) { border-left: 3px solid #4f98a3; padding-left: 16px; color: #797876; margin-bottom: 14px; }
-  .prose :global(a) { color: #4f98a3; }
-  .prose :global(hr) { border: none; border-top: 1px solid #2a2927; margin: 24px 0; }
+  .tab-close { width: 18px; height: 18px; padding: 0; margin-right: 4px; background: none; border: none;
+    color: #555350; cursor: pointer; font-size: 0.9rem; line-height: 1; display: grid; place-items: center;
+    border-radius: 3px; transition: background 140ms, color 140ms; }
+  .tab-close:hover { background: #3a1a1a; color: #e06060; }
 
-  .no-note {
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    gap: 14px; height: 100%; text-align: center; color: #555350; padding: 40px;
-  }
-  .no-note-icon { width: 64px; height: 64px; color: #2e2d2b; }
-  .no-note-icon svg { width: 64px; height: 64px; }
-  .no-note h2 { font-size: 1.1rem; color: #797876; font-weight: 600; }
-  .no-note p { font-size: 0.875rem; max-width: 30ch; }
+  .tab-add { padding: 4px 10px; background: none; border: none; color: #555350; cursor: pointer;
+    font-size: 1.1rem; line-height: 1; border-radius: 6px; transition: background 140ms, color 140ms;
+    margin-left: 2px; flex-shrink: 0; }
+  .tab-add:hover { background: #252422; color: #4f98a3; }
 
-  .btn-primary {
-    padding: 10px 22px; border: none; border-radius: 10px;
-    background: #4f98a3; color: #0f1a1b; font: inherit; font-weight: 700; cursor: pointer;
-    transition: background 150ms;
-  }
-  .btn-primary:hover { background: #3d8590; }
+  .editor-body { flex: 1; overflow: hidden; display: flex; }
+  .editor-body textarea { flex: 1; width: 100%; height: 100%; padding: 20px 24px;
+    background: transparent; border: none; color: #cdccca; font: 400 0.95rem/1.75 'Inter', sans-serif;
+    resize: none; outline: none; }
+  .editor-body textarea::placeholder { color: #333230; }
 
-  /* Mobile */
-  @media (max-width: 820px) {
-    .shell { grid-template-columns: 1fr; grid-template-rows: 260px 1fr; }
-    .sidebar { border-right: none; border-bottom: 1px solid #2a2927; }
-    .editor-pane { overflow: auto; }
-    textarea, .prose { min-height: 50vh; }
-    .editor-header { padding: 12px 16px; }
-    textarea { padding: 16px; }
-    .prose { padding: 16px; }
-  }
+  /* Empty state */
+  .no-note { flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; color: #525150; padding: 40px; }
+  .no-note-icon svg { width: 56px; height: 56px; color: #2d2c2a; }
+  .no-note h2 { font-size: 1.1rem; font-weight: 600; color: #636260; }
+  .no-note p { font-size: 0.875rem; color: #555350; text-align: center; max-width: 30ch; }
+  .btn-primary { padding: 9px 20px; background: #4f98a3; color: #fff; border: none; border-radius: 8px;
+    font: 500 0.875rem 'Inter', sans-serif; cursor: pointer; transition: background 140ms; }
+  .btn-primary:hover { background: #3d8490; }
 </style>
