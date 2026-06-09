@@ -1,28 +1,41 @@
-generator client {
-  provider = "prisma-client-js"
-}
-
 datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
 }
 
 model User {
   id           String   @id @default(cuid())
   username     String   @unique
   passwordHash String
-  createdAt    DateTime @default(now())
   notes        Note[]
+  createdAt    DateTime @default(now())
 }
 
 model Note {
   id        String   @id @default(cuid())
   title     String   @default("Untitled")
   content   String   @default("")
+  parentId  String?
+  parent    Note?    @relation("NoteChildren", fields: [parentId], references: [id])
+  children  Note[]   @relation("NoteChildren")
+  tabs      Tab[]
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
 
-  @@index([userId, updatedAt])
+model Tab {
+  id        String   @id @default(cuid())
+  name      String   @default("Tab")
+  content   String   @default("")
+  noteId    String
+  note      Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
