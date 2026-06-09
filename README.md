@@ -2,6 +2,8 @@
 
 A minimal self-hosted notes app — left sidebar, right editor, dark UI, search, tabs, recycle bin, login.
 
+Uses about 30MB of memory.
+
 ## Stack
 
 - **SvelteKit** — frontend + server routes
