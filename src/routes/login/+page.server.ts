@@ -15,10 +15,15 @@ export const actions: Actions = {
 
     const user = await prisma.user.findUnique({ where: { username } });
     if (!user) {
+      console.log(`[login] no user found for username: ${username}`);
       return fail(401, { error: "Invalid username or password." });
     }
 
+    console.log(`[login] found user: ${username}, hash prefix: ${user.passwordHash?.slice(0,20)}`);
+
     const valid = await verifyPassword(password, user.passwordHash);
+    console.log(`[login] password valid: ${valid}`);
+
     if (!valid) {
       return fail(401, { error: "Invalid username or password." });
     }
@@ -28,7 +33,8 @@ export const actions: Actions = {
       path: "/",
       httpOnly: true,
       sameSite: "lax",
-      maxAge: 60 * 60 * 24 * 30
+      maxAge: 60 * 60 * 24 * 30,
+      secure: false
     });
 
     throw redirect(303, "/app");
