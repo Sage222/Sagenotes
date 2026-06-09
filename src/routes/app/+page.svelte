@@ -2,6 +2,51 @@
   import { onMount } from 'svelte';
   import { browser } from '$app/environment';
 
+  // ── Sidebar resize ──────────────────────────────────────
+  import { onDestroy } from 'svelte';
+
+  let sidebarW = 260;
+  let dragging = false;
+
+  function initResizer(node: HTMLElement) {
+    const shell = node.closest('.shell') as HTMLElement;
+
+    function onMouseDown(e: MouseEvent) {
+      dragging = true;
+      node.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      function onMouseMove(e: MouseEvent) {
+        const newW = Math.min(480, Math.max(160, e.clientX));
+        sidebarW = newW;
+        shell.style.setProperty('--sidebar-w', newW + 'px');
+      }
+
+      function onMouseUp() {
+        dragging = false;
+        node.classList.remove('dragging');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      }
+
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+      e.preventDefault();
+    }
+
+    node.addEventListener('mousedown', onMouseDown);
+    return { destroy() { node.removeEventListener('mousedown', onMouseDown); } };
+  }
+
+  // ── Mobile sidebar toggle ──────────────────────────────
+  let sidebarOpen = false;
+  function toggleSidebar() { sidebarOpen = !sidebarOpen; }
+  function closeSidebar() { sidebarOpen = false; }
+
+
   export let data: { notes: any[]; q: string; username: string };
 
   let notes = data.notes;
@@ -212,9 +257,19 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </svelte:head>
 
+<!-- Mobile sidebar toggle -->
+<button class="mobile-toggle" on:click={toggleSidebar} aria-label="Toggle sidebar">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M3 12h18M3 6h18M3 18h18"/>
+  </svg>
+</button>
+{#if sidebarOpen}
+  <div class="overlay" on:click={closeSidebar} aria-hidden="true"></div>
+{/if}
+
 <div class="shell">
   <!-- ── Sidebar ── -->
-  <aside class="sidebar">
+  <aside class="sidebar" class:open={sidebarOpen}>
 
     <!-- Brand header — fixed at top -->
     <div class="sidebar-top">
@@ -227,6 +282,9 @@
         <button class="btn-icon" on:click={() => createNote(null)} aria-label="New note" title="New note">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         </button>
+        <a class="btn-icon btn-about" href="https://github.com/Sage222/Sagenotes" target="_blank" rel="noopener noreferrer" aria-label="About SageNotes v1.0" title="SageNotes v1.0 — GitHub">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+        </a>
       </div>
 
       <div class="search-wrap">
@@ -338,6 +396,9 @@
     </div>
   </aside>
 
+  <!-- ── Resize handle ── -->
+  <div class="resizer" role="separator" aria-label="Resize sidebar" tabindex="0" use:initResizer></div>
+
   <!-- ── Editor ── -->
   <main class="editor-pane">
     {#if selectedId}
@@ -387,7 +448,7 @@
   /* Shell: two columns, full height */
   .shell {
     display: grid;
-    grid-template-columns: 290px 1fr;
+    grid-template-columns: var(--sidebar-w, 260px) 4px 1fr;
     height: 100dvh;
     overflow: hidden;
   }
@@ -676,4 +737,86 @@
     transition: background 140ms;
   }
   .btn-primary:hover { background: #3d8490; }
+
+  /* ── Resizer drag handle ── */
+  .resizer {
+    width: 4px;
+    background: #252422;
+    cursor: col-resize;
+    transition: background 140ms;
+    position: relative;
+    z-index: 10;
+    flex-shrink: 0;
+  }
+  .resizer:hover,
+  .resizer.dragging {
+    background: #4f98a3;
+  }
+  .resizer::after {
+    content: '';
+    position: absolute;
+    inset: 0 -4px;
+  }
+
+  /* About button */
+  .btn-about {
+    display: grid;
+    place-items: center;
+    text-decoration: none;
+    color: #636260;
+  }
+  .btn-about:hover {
+    color: #4f98a3;
+    border-color: #4f98a3;
+    background: #2d2c2a;
+  }
+
+  /* Mobile: sidebar collapses, toggle button appears */
+  @media (max-width: 640px) {
+    .shell {
+      grid-template-columns: 1fr !important;
+    }
+    .sidebar {
+      position: fixed;
+      left: 0; top: 0; bottom: 0;
+      width: var(--sidebar-w, 260px) !important;
+      max-width: 85vw;
+      transform: translateX(-100%);
+      transition: transform 200ms cubic-bezier(0.16,1,0.3,1);
+      z-index: 100;
+      box-shadow: 4px 0 24px oklch(0 0 0 / 0.4);
+    }
+    .sidebar.open {
+      transform: translateX(0);
+    }
+    .resizer { display: none; }
+    .mobile-toggle {
+      display: flex !important;
+    }
+    .overlay {
+      display: block !important;
+    }
+  }
+  .mobile-toggle {
+    display: none;
+    position: fixed;
+    top: 14px; left: 14px;
+    z-index: 99;
+    width: 36px; height: 36px;
+    background: #1c1b19;
+    border: 1px solid #393836;
+    border-radius: 8px;
+    color: #cdccca;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+  }
+  .overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: oklch(0 0 0 / 0.5);
+    z-index: 99;
+  }
+
 </style>
