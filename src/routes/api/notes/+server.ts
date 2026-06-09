@@ -5,19 +5,23 @@ import { requireUser } from "$lib/server/auth";
 export async function GET({ request, url }) {
   const userId = requireUser(request);
   const q = url.searchParams.get("q")?.trim() || "";
-  const where = {
+  const bin = url.searchParams.get("bin") === "1";
+
+  const where: any = {
     userId,
     parentId: null,
-    ...(q ? {
+    deletedAt: bin ? { not: null } : null,
+    ...(q && !bin ? {
       OR: [
-        { title: { contains: q, mode: "insensitive" } },
-        { content: { contains: q, mode: "insensitive" } }
+        { title: { contains: q } },
+        { content: { contains: q } }
       ]
     } : {})
   };
+
   const notes = await prisma.note.findMany({
     where,
-    include: { children: { orderBy: { updatedAt: "desc" } } },
+    include: { children: { where: { deletedAt: null }, orderBy: { updatedAt: "desc" } } },
     orderBy: { updatedAt: "desc" }
   });
   return json(notes);
@@ -40,12 +44,20 @@ export async function POST({ request }) {
 export async function PUT({ request }) {
   const userId = requireUser(request);
   const body = await request.json();
+
+  // Restore from bin
+  if (body.action === "restore") {
+    const note = await prisma.note.update({
+      where: { id: body.id, userId },
+      data: { deletedAt: null }
+    });
+    return json(note);
+  }
+
+  // Regular save
   const note = await prisma.note.update({
     where: { id: body.id, userId },
-    data: {
-      title: body.title,
-      content: body.content
-    }
+    data: { title: body.title, content: body.content }
   });
   return json(note);
 }
@@ -53,6 +65,28 @@ export async function PUT({ request }) {
 export async function DELETE({ request }) {
   const userId = requireUser(request);
   const body = await request.json();
-  await prisma.note.deleteMany({ where: { id: body.id, userId } });
+
+  // Empty bin — hard delete all soft-deleted notes
+  if (body.action === "empty-bin") {
+    const deleted = await prisma.note.findMany({
+      where: { userId, deletedAt: { not: null } }
+    });
+    for (const n of deleted) {
+      await prisma.tab.deleteMany({ where: { noteId: n.id } });
+    }
+    await prisma.note.deleteMany({ where: { userId, deletedAt: { not: null } } });
+    return json({ ok: true });
+  }
+
+  // Soft delete — move to bin
+  await prisma.note.update({
+    where: { id: body.id, userId },
+    data: { deletedAt: new Date() }
+  });
+  // Also soft-delete children
+  await prisma.note.updateMany({
+    where: { parentId: body.id, userId },
+    data: { deletedAt: new Date() }
+  });
   return json({ ok: true });
 }
