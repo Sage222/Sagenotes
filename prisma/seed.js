@@ -1,26 +1,33 @@
-import { PrismaClient } from '@prisma/client';
-import argon2 from 'argon2';
+const { PrismaClient } = require('@prisma/client');
+const { createHmac, randomBytes, scrypt } = require('crypto');
 
 const prisma = new PrismaClient();
-const username = process.env.DEFAULT_ADMIN_USERNAME || 'sage';
-const password = process.env.DEFAULT_ADMIN_PASSWORD || 'change-me-now';
 
-async function run() {
-  const existing = await prisma.user.findUnique({ where: { username } });
-  if (!existing) {
-    const passwordHash = await argon2.hash(password);
-    const user = await prisma.user.create({ data: { username, passwordHash } });
-    await prisma.note.create({
-      data: {
-        userId: user.id,
-        title: 'Welcome to SageNotes',
-        content: '# Welcome to SageNotes\n\nThis is your first note. Start writing!\n\n## Tips\n\n- Notes autosave as you type\n- Use the search box to find notes\n- Toggle **Preview** to render Markdown\n- Install as a PWA on Android via Chrome menu → Add to Home Screen'
-      }
+function hashPassword(password) {
+  const salt = randomBytes(16).toString('hex');
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, 64, (err, key) => {
+      if (err) reject(err);
+      else resolve(`${salt}:${key.toString('hex')}`);
     });
-    console.log(`Created user: ${username}`);
-  } else {
-    console.log(`User ${username} already exists, skipping seed.`);
-  }
+  });
 }
 
-run().finally(() => prisma.$disconnect());
+async function main() {
+  const username = process.env.DEFAULT_ADMIN_USERNAME || 'sage';
+  const password = process.env.DEFAULT_ADMIN_PASSWORD || 'changeme';
+
+  const existing = await prisma.user.findUnique({ where: { username } });
+  if (existing) {
+    console.log(`User already exists: ${username}`);
+    return;
+  }
+
+  const passwordHash = await hashPassword(password);
+  await prisma.user.create({ data: { username, passwordHash } });
+  console.log(`Created user: ${username}`);
+}
+
+main()
+  .catch(console.error)
+  .finally(() => prisma.$disconnect());
