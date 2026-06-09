@@ -2,7 +2,6 @@
 FROM node:22-bookworm-slim AS builder
 WORKDIR /app
 
-# Install native build deps for argon2
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 COPY package.json ./
@@ -10,6 +9,7 @@ RUN npm install
 
 COPY . .
 RUN npx prisma generate
+RUN npx svelte-kit sync
 RUN npm run build
 
 # Stage 2: production image
