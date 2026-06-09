@@ -1,0 +1,16 @@
+{
+  "name": "SageNotes",
+  "short_name": "SageNotes",
+  "start_url": "/login",
+  "display": "standalone",
+  "background_color": "#171614",
+  "theme_color": "#171614",
+  "description": "Self-hosted minimal notes app",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}

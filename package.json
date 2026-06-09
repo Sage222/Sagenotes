@@ -1,0 +1,30 @@
+{
+  "name": "sagenotes",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "db:push": "prisma db push",
+    "db:seed": "node prisma/seed.js"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-node": "^5.2.9",
+    "@sveltejs/kit": "^2.12.1",
+    "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "prisma": "^5.16.1",
+    "svelte": "^5.0.0",
+    "svelte-check": "^4.0.0",
+    "tslib": "^2.6.3",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.16.1",
+    "argon2": "^0.41.1",
+    "jsonwebtoken": "^9.0.2",
+    "marked": "^13.0.2"
+  }
+}
