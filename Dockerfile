@@ -1,29 +1,17 @@
-# Stage 1: build
-FROM node:22-bookworm-slim AS builder
+FROM node:20-alpine
+
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y python3 make g++ openssl && rm -rf /var/lib/apt/lists/*
-
-COPY package.json ./
-RUN npm install
+COPY package*.json ./
+RUN npm ci
 
 COPY . .
+
 RUN npx prisma generate
-RUN npx svelte-kit sync
 RUN npm run build
-
-# Stage 2: production image
-FROM node:22-bookworm-slim
-WORKDIR /app
-ENV NODE_ENV=production
-
-RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/build ./build
-COPY --from=builder /app/prisma ./prisma
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma db push && node prisma/seed.js && node build"]
+ENV DATABASE_URL="file:/data/sagenotes.db"
+
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node prisma/seed.js && node build/index.js"]
