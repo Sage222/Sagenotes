@@ -1,12 +1,12 @@
 import { PrismaClient } from "@prisma/client";
-import { createHash, randomBytes, pbkdf2Sync } from "crypto";
+import { randomBytes, scryptSync } from "crypto";
 
 const prisma = new PrismaClient();
 
 function hashPassword(password) {
   const salt = randomBytes(16).toString("hex");
-  const hash = pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
-  return `${salt}:${hash}`;
+  const key = scryptSync(password, salt, 64);
+  return `${salt}:${key.toString("hex")}`;
 }
 
 async function main() {
