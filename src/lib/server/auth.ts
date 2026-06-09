@@ -1,8 +1,9 @@
-import { createHmac, randomBytes, timingSafeEqual } from "crypto";
+import { createHmac, randomBytes, timingSafeEqual, scrypt } from "crypto";
+import { promisify } from "util";
 
+const scryptAsync = promisify(scrypt);
 const SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 
-// ── Simple token: base64(payload).base64(hmac) ──────────────
 export function signToken(payload: { userId: string; username: string }): string {
   const data = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const sig = createHmac("sha256", SECRET).update(data).digest("base64url");
@@ -24,27 +25,16 @@ export function verifyToken(token: string): { userId: string; username: string }
   }
 }
 
-// ── Password hashing with built-in scrypt ────────────────────
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
-  return new Promise((resolve, reject) => {
-    const { scrypt } = require("crypto");
-    scrypt(password, salt, 64, (err: Error | null, key: Buffer) => {
-      if (err) reject(err);
-      else resolve(`${salt}:${key.toString("hex")}`);
-    });
-  });
+  const key = await scryptAsync(password, salt, 64) as Buffer;
+  return `${salt}:${key.toString("hex")}`;
 }
 
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [salt, hash] = stored.split(":");
-  return new Promise((resolve, reject) => {
-    const { scrypt, timingSafeEqual } = require("crypto");
-    scrypt(password, salt, 64, (err: Error | null, key: Buffer) => {
-      if (err) reject(err);
-      else resolve(timingSafeEqual(Buffer.from(hash, "hex"), key));
-    });
-  });
+  const key = await scryptAsync(password, salt, 64) as Buffer;
+  return timingSafeEqual(Buffer.from(hash, "hex"), key);
 }
 
 export function requireUser(request: Request): string {
