@@ -1,9 +1,10 @@
 <script lang="ts">
+  import { onMount, browser } from '$app/environment';
+
   export let data: { notes: any[]; q: string; username: string };
 
-  // ── State ──────────────────────────────────────────────
   let notes = data.notes;
-  let selectedId: string | null = notes[0]?.id ?? null;
+  let selectedId: string | null = null;
   let expanded: Record<string, boolean> = {};
 
   let title = '';
@@ -15,14 +16,19 @@
   let saveTimer: ReturnType<typeof setTimeout>;
   let searchQ = data.q;
 
-  // ── Load note ──────────────────────────────────────────
+  // Set first note selected only on client to avoid SSR fetch
+  onMount(() => {
+    if (notes[0]) selectedId = notes[0].id;
+  });
+
+  // ── Load note (client-only) ────────────────────────────
   async function loadNote(id: string) {
+    if (!browser) return;
     const res = await fetch(`/api/notes/${id}`);
     const note = await res.json();
     title = note.title;
     tabs = note.tabs ?? [];
     if (tabs.length === 0) {
-      // create default tab
       const t = await fetch('/api/tabs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -34,7 +40,7 @@
     tabContent = tabs.find(t => t.id === activeTabId)?.content ?? '';
   }
 
-  $: if (selectedId) loadNote(selectedId);
+  $: if (selectedId && browser) loadNote(selectedId);
 
   function selectTab(id: string) {
     saveTabNow();
@@ -51,6 +57,11 @@
   async function saveAll() {
     if (!selectedId) return;
     saving = true;
+    // Update sidebar title reactively
+    notes = notes.map(n => n.id === selectedId
+      ? { ...n, title }
+      : { ...n, children: (n.children ?? []).map((c: any) => c.id === selectedId ? { ...c, title } : c) }
+    );
     await Promise.all([
       fetch('/api/notes', {
         method: 'PUT',
@@ -63,7 +74,6 @@
         body: JSON.stringify({ id: activeTabId, content: tabContent })
       }) : Promise.resolve()
     ]);
-    notes = notes.map(n => n.id === selectedId ? { ...n, title } : n);
     saving = false;
   }
 
@@ -98,20 +108,21 @@
 
   // ── Delete note ───────────────────────────────────────
   async function removeNote() {
-    if (!selectedId || !confirm('Delete this note and all its subnotes?')) return;
+    if (!selectedId || !confirm('Delete this note?')) return;
     await fetch('/api/notes', {
       method: 'DELETE',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id: selectedId })
     });
-    notes = notes.filter(n => n.id !== selectedId).map(n => ({
-      ...n, children: (n.children ?? []).filter((c: any) => c.id !== selectedId)
-    }));
-    selectedId = notes[0]?.id ?? null;
+    notes = notes
+      .filter(n => n.id !== selectedId)
+      .map(n => ({ ...n, children: (n.children ?? []).filter((c: any) => c.id !== selectedId) }));
+    const next = notes[0]?.id ?? notes[0]?.children?.[0]?.id ?? null;
+    selectedId = next;
     if (!selectedId) { title = ''; tabs = []; tabContent = ''; }
   }
 
-  // ── Add tab ───────────────────────────────────────────
+  // ── Tabs ──────────────────────────────────────────────
   async function addTab() {
     if (!selectedId) return;
     await saveTabNow();
@@ -151,11 +162,6 @@
   function handleSearchKey(e: KeyboardEvent) {
     if (e.key === 'Enter') doSearch();
     if (e.key === 'Escape') { searchQ = ''; doSearch(); }
-  }
-
-  // ── Helpers ───────────────────────────────────────────
-  function formatDate(value: string) {
-    return new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
   function toggleExpand(id: string) {
@@ -215,7 +221,6 @@
             {/if}
             <button class="note-item" on:click={() => (selectedId = note.id)} aria-current={note.id === selectedId ? 'page' : undefined}>
               <span class="note-title">{note.title || 'Untitled'}</span>
-              <span class="note-date">{formatDate(note.updatedAt)}</span>
             </button>
             <button class="btn-add-sub" on:click={() => createNote(note.id)} aria-label="Add subnote" title="Add subnote">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
@@ -233,7 +238,6 @@
                 >
                   <span class="sub-dot" aria-hidden="true"></span>
                   <span class="note-title">{child.title || 'Untitled'}</span>
-                  <span class="note-date">{formatDate(child.updatedAt)}</span>
                 </button>
               {/each}
             </div>
@@ -278,7 +282,6 @@
         </div>
       </div>
 
-      <!-- Tabs bar -->
       <div class="tabs-bar">
         {#each tabs as tab (tab.id)}
           <div class="tab-wrap" class:tab-active={tab.id === activeTabId}>
@@ -323,7 +326,6 @@
 
   .shell { display: grid; grid-template-columns: 290px 1fr; height: 100dvh; overflow: hidden; }
 
-  /* ── Sidebar ── */
   .sidebar { background: #1c1b19; border-right: 1px solid #252422;
     display: grid; grid-template-rows: auto auto 1fr auto; overflow: hidden; }
 
@@ -331,34 +333,27 @@
     padding: 16px 14px 12px; border-bottom: 1px solid #252422; }
   .brand-icon { width: 22px; height: 22px; color: #4f98a3; flex-shrink: 0; }
   .brand-name { font-size: 0.95rem; font-weight: 700; color: #e2e1de; flex: 1; }
-
   .btn-icon { width: 30px; height: 30px; border-radius: 7px; border: 1px solid #393836;
-    background: #252422; color: #cdccca; cursor: pointer; display: grid; place-items: center; flex-shrink: 0;
+    background: #252422; color: #cdccca; cursor: pointer; display: grid; place-items: center;
     transition: background 140ms, border-color 140ms; }
   .btn-icon:hover { background: #2d2c2a; border-color: #4f98a3; color: #4f98a3; }
   .btn-icon svg { width: 14px; height: 14px; }
 
-  /* Search */
   .search-wrap { position: relative; padding: 10px 12px; border-bottom: 1px solid #252422; }
   .search-icon { position: absolute; left: 24px; top: 50%; transform: translateY(-50%);
     width: 14px; height: 14px; color: #555350; pointer-events: none; }
   .search-wrap input { width: 100%; padding: 8px 28px 8px 32px; border: 1px solid #393836;
     border-radius: 8px; background: #222120; color: #cdccca; font: inherit; font-size: 0.85rem;
-    outline: none; transition: border-color 140ms, box-shadow 140ms; }
+    outline: none; transition: border-color 140ms; }
   .search-wrap input:focus { border-color: #4f98a3; box-shadow: 0 0 0 3px rgba(79,152,163,.15); }
   .search-wrap input::placeholder { color: #555350; }
   .search-clear { position: absolute; right: 20px; top: 50%; transform: translateY(-50%);
-    background: none; border: none; color: #555350; cursor: pointer; font-size: 1.1rem; padding: 2px 4px;
-    line-height: 1; }
+    background: none; border: none; color: #555350; cursor: pointer; font-size: 1.1rem; padding: 2px 6px; }
   .search-clear:hover { color: #cdccca; }
 
-  /* Note list */
   .note-list { overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 1px; }
-
   .note-group { display: flex; flex-direction: column; }
-
-  .note-row { display: flex; align-items: center; gap: 2px; border-radius: 8px;
-    transition: background 120ms; }
+  .note-row { display: flex; align-items: center; gap: 2px; border-radius: 8px; transition: background 120ms; }
   .note-row:hover { background: #222120; }
   .note-row.active { background: #1e2e30; }
 
@@ -368,10 +363,9 @@
   .chevron svg { width: 12px; height: 12px; }
   .chevron-placeholder { width: 22px; flex-shrink: 0; }
 
-  .note-item { flex: 1; padding: 8px 4px 8px 2px; background: transparent; border: none;
-    color: #cdccca; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
-    min-width: 0; }
-  .note-item.sub { padding-left: 6px; }
+  .note-item { flex: 1; padding: 9px 4px 9px 2px; background: transparent; border: none;
+    color: #cdccca; text-align: left; cursor: pointer; min-width: 0; display: flex; align-items: center; gap: 6px; }
+  .note-item.sub { padding-left: 4px; }
 
   .btn-add-sub { width: 22px; height: 22px; flex-shrink: 0; display: grid; place-items: center;
     background: none; border: none; color: #444; cursor: pointer; padding: 0; border-radius: 4px;
@@ -381,35 +375,28 @@
   .btn-add-sub svg { width: 11px; height: 11px; }
 
   .note-title { font-size: 0.875rem; font-weight: 500; color: #d8d7d4;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
   .note-row.active .note-title { color: #7fc4cc; }
   .note-item.active .note-title { color: #7fc4cc; }
-  .note-date { font-size: 0.72rem; color: #525150; }
 
   .subnotes { padding-left: 22px; display: flex; flex-direction: column; gap: 1px; }
-  .sub-dot { width: 5px; height: 5px; border-radius: 50%; background: #444; flex-shrink: 0; margin-top: 2px; }
+  .sub-dot { width: 5px; height: 5px; border-radius: 50%; background: #444; flex-shrink: 0; }
 
   .empty-list { padding: 20px 10px; text-align: center; color: #555350; font-size: 0.85rem; display: grid; gap: 8px; }
-  .link { color: #4f98a3; background: none; border: none; cursor: pointer; font: inherit;
-    font-size: inherit; text-decoration: underline; padding: 0; }
+  .link { color: #4f98a3; background: none; border: none; cursor: pointer; font: inherit; font-size: inherit; text-decoration: underline; padding: 0; }
 
   .sidebar-footer { padding: 10px 14px; border-top: 1px solid #252422;
     display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .username { font-size: 0.8rem; color: #636260; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .logout-btn { font-size: 0.8rem; color: #636260; text-decoration: none; background: none; border: none;
-    cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background 140ms, color 140ms;
-    white-space: nowrap; }
+    cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background 140ms, color 140ms; white-space: nowrap; }
   .logout-btn:hover { background: #252422; color: #cdccca; }
 
-  /* ── Editor ── */
   .editor-pane { display: flex; flex-direction: column; overflow: hidden; background: #171614; }
-
-  .editor-header { display: flex; align-items: center; gap: 10px;
-    padding: 14px 20px 10px; border-bottom: 1px solid #222120; }
+  .editor-header { display: flex; align-items: center; gap: 10px; padding: 14px 20px 10px; border-bottom: 1px solid #222120; }
   .title-input { flex: 1; background: transparent; border: none; color: #e8e7e4;
     font: 600 1.15rem/1.3 'Inter', sans-serif; outline: none; min-width: 0; }
   .title-input::placeholder { color: #3a3938; }
-
   .editor-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .save-status { font-size: 0.75rem; color: #4f98a3; min-width: 50px; text-align: right; }
 
@@ -419,39 +406,31 @@
   .btn-danger:hover { background: #3a1a1a; border-color: #7a2020; color: #e06060; }
   .btn-danger svg { width: 15px; height: 15px; }
 
-  /* Tabs */
   .tabs-bar { display: flex; align-items: center; gap: 2px; padding: 0 16px;
     border-bottom: 1px solid #222120; background: #1a1917; overflow-x: auto;
     scrollbar-width: none; min-height: 38px; }
   .tabs-bar::-webkit-scrollbar { display: none; }
-
   .tab-wrap { display: flex; align-items: center; border-radius: 6px 6px 0 0;
-    border: 1px solid transparent; border-bottom: none; transition: background 140ms, border-color 140ms; }
+    border: 1px solid transparent; border-bottom: none; transition: background 140ms; }
   .tab-wrap.tab-active { background: #171614; border-color: #2a2927; border-bottom-color: #171614; }
   .tab-wrap:not(.tab-active):hover { background: #202020; }
-
   .tab-btn { padding: 6px 12px; background: none; border: none; color: #797876; cursor: pointer;
     font: 500 0.8rem 'Inter', sans-serif; white-space: nowrap; transition: color 140ms; }
   .tab-wrap.tab-active .tab-btn { color: #d8d7d4; }
-  .tab-btn:hover { color: #cdccca; }
-
   .tab-close { width: 18px; height: 18px; padding: 0; margin-right: 4px; background: none; border: none;
     color: #555350; cursor: pointer; font-size: 0.9rem; line-height: 1; display: grid; place-items: center;
     border-radius: 3px; transition: background 140ms, color 140ms; }
   .tab-close:hover { background: #3a1a1a; color: #e06060; }
-
   .tab-add { padding: 4px 10px; background: none; border: none; color: #555350; cursor: pointer;
-    font-size: 1.1rem; line-height: 1; border-radius: 6px; transition: background 140ms, color 140ms;
-    margin-left: 2px; flex-shrink: 0; }
+    font-size: 1.1rem; line-height: 1; border-radius: 6px; transition: background 140ms, color 140ms; margin-left: 2px; }
   .tab-add:hover { background: #252422; color: #4f98a3; }
 
   .editor-body { flex: 1; overflow: hidden; display: flex; }
   .editor-body textarea { flex: 1; width: 100%; height: 100%; padding: 20px 24px;
-    background: transparent; border: none; color: #cdccca; font: 400 0.95rem/1.75 'Inter', sans-serif;
-    resize: none; outline: none; }
+    background: transparent; border: none; color: #cdccca;
+    font: 400 0.95rem/1.75 'Inter', sans-serif; resize: none; outline: none; }
   .editor-body textarea::placeholder { color: #333230; }
 
-  /* Empty state */
   .no-note { flex: 1; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 14px; color: #525150; padding: 40px; }
   .no-note-icon svg { width: 56px; height: 56px; color: #2d2c2a; }
