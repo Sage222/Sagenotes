@@ -15,11 +15,11 @@ export function verifyToken(token: string): { userId: string; username: string }
     const [data, sig] = token.split(".");
     if (!data || !sig) return null;
     const expected = createHmac("sha256", SECRET).update(data).digest("base64url");
-    const sigBuf = Buffer.from(sig);
-    const expBuf = Buffer.from(expected);
+    const sigBuf = Buffer.from(sig, "utf8");
+    const expBuf = Buffer.from(expected, "utf8");
     if (sigBuf.length !== expBuf.length) return null;
     if (!timingSafeEqual(sigBuf, expBuf)) return null;
-    return JSON.parse(Buffer.from(data, "base64url").toString());
+    return JSON.parse(Buffer.from(data, "base64url").toString("utf8"));
   } catch {
     return null;
   }
@@ -32,9 +32,19 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
-  const [salt, hash] = stored.split(":");
-  const key = await scryptAsync(password, salt, 64) as Buffer;
-  return timingSafeEqual(Buffer.from(hash, "hex"), key);
+  if (!stored || !stored.includes(":")) return false;
+  const colonIdx = stored.indexOf(":");
+  const salt = stored.slice(0, colonIdx);
+  const hash = stored.slice(colonIdx + 1);
+  if (!salt || !hash) return false;
+  try {
+    const key = await scryptAsync(password, salt, 64) as Buffer;
+    const hashBuf = Buffer.from(hash, "hex");
+    if (key.length !== hashBuf.length) return false;
+    return timingSafeEqual(key, hashBuf);
+  } catch {
+    return false;
+  }
 }
 
 export function requireUser(request: Request): string {
