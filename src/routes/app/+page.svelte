@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, browser } from '$app/environment';
+  import { onMount } from 'svelte';
+  import { browser } from '$app/environment';
 
   export let data: { notes: any[]; q: string; username: string };
 
