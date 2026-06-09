@@ -16,6 +16,7 @@ export const load: PageServerLoad = async ({ cookies, url }) => {
     where: {
       userId: payload.userId,
       parentId: null,
+      deletedAt: null,
       ...(q ? {
         OR: [
           { title: { contains: q } },
@@ -23,7 +24,12 @@ export const load: PageServerLoad = async ({ cookies, url }) => {
         ]
       } : {})
     },
-    include: { children: { orderBy: { updatedAt: "desc" } } },
+    include: {
+      children: {
+        where: { deletedAt: null },
+        orderBy: { updatedAt: "desc" }
+      }
+    },
     orderBy: { updatedAt: "desc" }
   });
 
