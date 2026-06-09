@@ -5,6 +5,9 @@
   export let data: { notes: any[]; q: string; username: string };
 
   let notes = data.notes;
+  let binNotes: any[] = [];
+  let showBin = false;
+
   let selectedId: string | null = null;
   let expanded: Record<string, boolean> = {};
 
@@ -17,12 +20,11 @@
   let saveTimer: ReturnType<typeof setTimeout>;
   let searchQ = data.q;
 
-  // Set first note selected only on client to avoid SSR fetch
   onMount(() => {
     if (notes[0]) selectedId = notes[0].id;
   });
 
-  // ── Load note (client-only) ────────────────────────────
+  // ── Load note ──────────────────────────────────────────
   async function loadNote(id: string) {
     if (!browser) return;
     const res = await fetch(`/api/notes/${id}`);
@@ -58,7 +60,6 @@
   async function saveAll() {
     if (!selectedId) return;
     saving = true;
-    // Update sidebar title reactively
     notes = notes.map(n => n.id === selectedId
       ? { ...n, title }
       : { ...n, children: (n.children ?? []).map((c: any) => c.id === selectedId ? { ...c, title } : c) }
@@ -88,7 +89,7 @@
     tabs = tabs.map(t => t.id === activeTabId ? { ...t, content: tabContent } : t);
   }
 
-  // ── Create note / sub-note ────────────────────────────
+  // ── Create note ───────────────────────────────────────
   async function createNote(parentId: string | null = null) {
     const res = await fetch('/api/notes', {
       method: 'POST',
@@ -107,20 +108,41 @@
     selectedId = note.id;
   }
 
-  // ── Delete note ───────────────────────────────────────
-  async function removeNote() {
-    if (!selectedId || !confirm('Delete this note?')) return;
+  // ── Move note to bin (soft delete) ────────────────────
+  async function moveNoteToBin(id: string, noteTitle: string) {
+    if (!confirm(`Move "${noteTitle || 'Untitled'}" to the recycle bin?`)) return;
     await fetch('/api/notes', {
       method: 'DELETE',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: selectedId })
+      body: JSON.stringify({ id })
     });
     notes = notes
-      .filter(n => n.id !== selectedId)
-      .map(n => ({ ...n, children: (n.children ?? []).filter((c: any) => c.id !== selectedId) }));
-    const next = notes[0]?.id ?? notes[0]?.children?.[0]?.id ?? null;
-    selectedId = next;
-    if (!selectedId) { title = ''; tabs = []; tabContent = ''; }
+      .filter(n => n.id !== id)
+      .map(n => ({ ...n, children: (n.children ?? []).filter((c: any) => c.id !== id) }));
+    if (selectedId === id) {
+      selectedId = notes[0]?.id ?? null;
+      if (!selectedId) { title = ''; tabs = []; tabContent = ''; }
+    }
+  }
+
+  // ── Delete current TAB only ───────────────────────────
+  async function deleteCurrentTab() {
+    if (!activeTabId) return;
+    const tab = tabs.find(t => t.id === activeTabId);
+    if (!tab) return;
+    if (tabs.length <= 1) {
+      alert("Can't delete the only tab. Move the note to the bin instead.");
+      return;
+    }
+    if (!confirm(`Delete tab "${tab.name}"? This cannot be undone.`)) return;
+    await fetch('/api/tabs', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: activeTabId })
+    });
+    tabs = tabs.filter(t => t.id !== activeTabId);
+    activeTabId = tabs[0].id;
+    tabContent = tabs[0].content;
   }
 
   // ── Tabs ──────────────────────────────────────────────
@@ -139,19 +161,37 @@
     tabContent = '';
   }
 
-  async function removeTab(id: string) {
-    if (tabs.length <= 1) { alert("Can't delete the last tab."); return; }
-    if (!confirm('Delete this tab?')) return;
-    await fetch('/api/tabs', {
+  // ── Bin ───────────────────────────────────────────────
+  async function loadBin() {
+    const res = await fetch('/api/notes?bin=1');
+    binNotes = await res.json();
+  }
+
+  async function toggleBin() {
+    showBin = !showBin;
+    if (showBin) await loadBin();
+  }
+
+  async function restoreNote(id: string) {
+    await fetch('/api/notes', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id, action: 'restore' })
+    });
+    binNotes = binNotes.filter(n => n.id !== id);
+    // Reload sidebar
+    const res = await fetch('/api/notes');
+    notes = await res.json();
+  }
+
+  async function emptyBin() {
+    if (!confirm(`Permanently delete all ${binNotes.length} item(s) in the bin? This cannot be undone.`)) return;
+    await fetch('/api/notes', {
       method: 'DELETE',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id })
+      body: JSON.stringify({ action: 'empty-bin' })
     });
-    tabs = tabs.filter(t => t.id !== id);
-    if (activeTabId === id) {
-      activeTabId = tabs[0].id;
-      tabContent = tabs[0].content;
-    }
+    binNotes = [];
   }
 
   // ── Search ────────────────────────────────────────────
@@ -196,12 +236,7 @@
 
     <div class="search-wrap">
       <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-      <input
-        bind:value={searchQ}
-        on:keydown={handleSearchKey}
-        placeholder="Search notes…"
-        aria-label="Search notes"
-      />
+      <input bind:value={searchQ} on:keydown={handleSearchKey} placeholder="Search notes…" aria-label="Search notes" />
       {#if searchQ}
         <button class="search-clear" on:click={() => { searchQ = ''; doSearch(); }} aria-label="Clear search">×</button>
       {/if}
@@ -223,23 +258,31 @@
             <button class="note-item" on:click={() => (selectedId = note.id)} aria-current={note.id === selectedId ? 'page' : undefined}>
               <span class="note-title">{note.title || 'Untitled'}</span>
             </button>
-            <button class="btn-add-sub" on:click={() => createNote(note.id)} aria-label="Add subnote" title="Add subnote">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-            </button>
+            <div class="note-actions">
+              <button class="btn-row-icon" on:click={() => createNote(note.id)} aria-label="Add subnote" title="Add subnote">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <button class="btn-row-icon btn-bin" on:click={() => moveNoteToBin(note.id, note.title)} aria-label="Move to bin" title="Move to bin">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+              </button>
+            </div>
           </div>
 
           {#if expanded[note.id] && note.children?.length > 0}
             <div class="subnotes">
               {#each note.children as child (child.id)}
-                <button
-                  class="note-item sub"
-                  class:active={child.id === selectedId}
-                  on:click={() => (selectedId = child.id)}
-                  aria-current={child.id === selectedId ? 'page' : undefined}
-                >
-                  <span class="sub-dot" aria-hidden="true"></span>
-                  <span class="note-title">{child.title || 'Untitled'}</span>
-                </button>
+                <div class="note-row sub-row" class:active={child.id === selectedId}>
+                  <span class="chevron-placeholder"></span>
+                  <button class="note-item sub" on:click={() => (selectedId = child.id)} aria-current={child.id === selectedId ? 'page' : undefined}>
+                    <span class="sub-dot" aria-hidden="true"></span>
+                    <span class="note-title">{child.title || 'Untitled'}</span>
+                  </button>
+                  <div class="note-actions">
+                    <button class="btn-row-icon btn-bin" on:click={() => moveNoteToBin(child.id, child.title)} aria-label="Move to bin" title="Move to bin">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+                    </button>
+                  </div>
+                </div>
               {/each}
             </div>
           {/if}
@@ -258,6 +301,34 @@
       {/if}
     </nav>
 
+    <!-- ── Recycle Bin ── -->
+    <div class="bin-section">
+      <button class="bin-toggle" on:click={toggleBin} aria-expanded={showBin}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="bin-icon"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+        <span>Recycle Bin</span>
+        {#if binNotes.length > 0}<span class="bin-count">{binNotes.length}</span>{/if}
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="bin-chevron" style="transform: rotate({showBin ? 180 : 0}deg); transition: transform 150ms">
+          <path d="M6 9l6 6 6-6"/>
+        </svg>
+      </button>
+
+      {#if showBin}
+        <div class="bin-contents">
+          {#if binNotes.length === 0}
+            <p class="bin-empty">Bin is empty</p>
+          {:else}
+            {#each binNotes as note (note.id)}
+              <div class="bin-item">
+                <span class="bin-item-title">{note.title || 'Untitled'}</span>
+                <button class="btn-restore" on:click={() => restoreNote(note.id)} title="Restore">↩</button>
+              </div>
+            {/each}
+            <button class="btn-empty-bin" on:click={emptyBin}>Empty bin</button>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
     <div class="sidebar-footer">
       <span class="username">{data.username}</span>
       <a href="/logout" class="logout-btn">Log out</a>
@@ -268,18 +339,9 @@
   <main class="editor-pane">
     {#if selectedId}
       <div class="editor-header">
-        <input
-          class="title-input"
-          bind:value={title}
-          on:input={queueSave}
-          placeholder="Note title"
-          aria-label="Note title"
-        />
+        <input class="title-input" bind:value={title} on:input={queueSave} placeholder="Note title" aria-label="Note title" />
         <div class="editor-actions">
           <span class="save-status" aria-live="polite">{saving ? 'Saving…' : ''}</span>
-          <button class="btn-danger" on:click={removeNote} aria-label="Delete note" title="Delete note">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
-          </button>
         </div>
       </div>
 
@@ -287,22 +349,14 @@
         {#each tabs as tab (tab.id)}
           <div class="tab-wrap" class:tab-active={tab.id === activeTabId}>
             <button class="tab-btn" on:click={() => selectTab(tab.id)}>{tab.name}</button>
-            {#if tabs.length > 1}
-              <button class="tab-close" on:click={() => removeTab(tab.id)} aria-label="Close tab">×</button>
-            {/if}
+            <button class="tab-close" on:click={() => deleteCurrentTab()} aria-label="Delete tab" title="Delete this tab">×</button>
           </div>
         {/each}
         <button class="tab-add" on:click={addTab} aria-label="Add tab" title="New tab">+</button>
       </div>
 
       <div class="editor-body">
-        <textarea
-          bind:value={tabContent}
-          on:input={queueSave}
-          placeholder="Start writing…"
-          aria-label="Note content"
-          spellcheck="true"
-        ></textarea>
+        <textarea bind:value={tabContent} on:input={queueSave} placeholder="Start writing…" aria-label="Note content" spellcheck="true"></textarea>
       </div>
     {:else}
       <div class="no-note">
@@ -327,8 +381,9 @@
 
   .shell { display: grid; grid-template-columns: 290px 1fr; height: 100dvh; overflow: hidden; }
 
+  /* Sidebar */
   .sidebar { background: #1c1b19; border-right: 1px solid #252422;
-    display: grid; grid-template-rows: auto auto 1fr auto; overflow: hidden; }
+    display: grid; grid-template-rows: auto auto 1fr auto auto; overflow: hidden; }
 
   .sidebar-brand { display: flex; align-items: center; gap: 10px;
     padding: 16px 14px 12px; border-bottom: 1px solid #252422; }
@@ -340,6 +395,7 @@
   .btn-icon:hover { background: #2d2c2a; border-color: #4f98a3; color: #4f98a3; }
   .btn-icon svg { width: 14px; height: 14px; }
 
+  /* Search */
   .search-wrap { position: relative; padding: 10px 12px; border-bottom: 1px solid #252422; }
   .search-icon { position: absolute; left: 24px; top: 50%; transform: translateY(-50%);
     width: 14px; height: 14px; color: #555350; pointer-events: none; }
@@ -352,11 +408,14 @@
     background: none; border: none; color: #555350; cursor: pointer; font-size: 1.1rem; padding: 2px 6px; }
   .search-clear:hover { color: #cdccca; }
 
+  /* Note list */
   .note-list { overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 1px; }
   .note-group { display: flex; flex-direction: column; }
+
   .note-row { display: flex; align-items: center; gap: 2px; border-radius: 8px; transition: background 120ms; }
   .note-row:hover { background: #222120; }
   .note-row.active { background: #1e2e30; }
+  .sub-row { margin-left: 0; }
 
   .chevron { width: 22px; height: 22px; flex-shrink: 0; display: grid; place-items: center;
     background: none; border: none; color: #555350; cursor: pointer; padding: 0; border-radius: 4px; }
@@ -364,21 +423,22 @@
   .chevron svg { width: 12px; height: 12px; }
   .chevron-placeholder { width: 22px; flex-shrink: 0; }
 
-  .note-item { flex: 1; padding: 9px 4px 9px 2px; background: transparent; border: none;
+  .note-item { flex: 1; padding: 9px 2px; background: transparent; border: none;
     color: #cdccca; text-align: left; cursor: pointer; min-width: 0; display: flex; align-items: center; gap: 6px; }
-  .note-item.sub { padding-left: 4px; }
-
-  .btn-add-sub { width: 22px; height: 22px; flex-shrink: 0; display: grid; place-items: center;
-    background: none; border: none; color: #444; cursor: pointer; padding: 0; border-radius: 4px;
-    opacity: 0; transition: opacity 140ms, color 140ms; }
-  .note-row:hover .btn-add-sub { opacity: 1; }
-  .btn-add-sub:hover { color: #4f98a3; }
-  .btn-add-sub svg { width: 11px; height: 11px; }
-
   .note-title { font-size: 0.875rem; font-weight: 500; color: #d8d7d4;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
   .note-row.active .note-title { color: #7fc4cc; }
   .note-item.active .note-title { color: #7fc4cc; }
+
+  .note-actions { display: flex; gap: 1px; opacity: 0; transition: opacity 140ms; flex-shrink: 0; padding-right: 4px; }
+  .note-row:hover .note-actions { opacity: 1; }
+
+  .btn-row-icon { width: 22px; height: 22px; display: grid; place-items: center;
+    background: none; border: none; color: #555350; cursor: pointer; padding: 0; border-radius: 4px;
+    transition: background 140ms, color 140ms; }
+  .btn-row-icon:hover { background: #2a2927; color: #cdccca; }
+  .btn-row-icon.btn-bin:hover { background: #3a1a1a; color: #e06060; }
+  .btn-row-icon svg { width: 12px; height: 12px; }
 
   .subnotes { padding-left: 22px; display: flex; flex-direction: column; gap: 1px; }
   .sub-dot { width: 5px; height: 5px; border-radius: 50%; background: #444; flex-shrink: 0; }
@@ -386,6 +446,34 @@
   .empty-list { padding: 20px 10px; text-align: center; color: #555350; font-size: 0.85rem; display: grid; gap: 8px; }
   .link { color: #4f98a3; background: none; border: none; cursor: pointer; font: inherit; font-size: inherit; text-decoration: underline; padding: 0; }
 
+  /* Recycle bin */
+  .bin-section { border-top: 1px solid #252422; }
+  .bin-toggle { width: 100%; display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: none; border: none; color: #636260; cursor: pointer; font: 500 0.8rem 'Inter', sans-serif;
+    transition: background 140ms, color 140ms; text-align: left; }
+  .bin-toggle:hover { background: #222120; color: #cdccca; }
+  .bin-icon { width: 14px; height: 14px; flex-shrink: 0; }
+  .bin-toggle span:nth-child(2) { flex: 1; }
+  .bin-count { background: #393836; color: #9a9896; font-size: 0.7rem; padding: 1px 6px;
+    border-radius: 99px; min-width: 18px; text-align: center; }
+  .bin-chevron { width: 14px; height: 14px; flex-shrink: 0; }
+
+  .bin-contents { padding: 4px 10px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .bin-empty { font-size: 0.8rem; color: #555350; text-align: center; padding: 8px 0; }
+  .bin-item { display: flex; align-items: center; gap: 6px; padding: 6px 6px;
+    border-radius: 6px; transition: background 120ms; }
+  .bin-item:hover { background: #222120; }
+  .bin-item-title { flex: 1; font-size: 0.825rem; color: #797876;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .btn-restore { background: none; border: none; color: #4f98a3; cursor: pointer;
+    font-size: 1rem; padding: 2px 6px; border-radius: 4px; transition: background 140ms; flex-shrink: 0; }
+  .btn-restore:hover { background: #1e2e30; }
+  .btn-empty-bin { margin-top: 6px; width: 100%; padding: 6px; background: none;
+    border: 1px solid #3a2020; border-radius: 6px; color: #9a5050; cursor: pointer;
+    font: 500 0.8rem 'Inter', sans-serif; transition: background 140ms, color 140ms; }
+  .btn-empty-bin:hover { background: #3a1a1a; color: #e06060; border-color: #7a2020; }
+
+  /* Sidebar footer */
   .sidebar-footer { padding: 10px 14px; border-top: 1px solid #252422;
     display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .username { font-size: 0.8rem; color: #636260; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -393,6 +481,7 @@
     cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background 140ms, color 140ms; white-space: nowrap; }
   .logout-btn:hover { background: #252422; color: #cdccca; }
 
+  /* Editor */
   .editor-pane { display: flex; flex-direction: column; overflow: hidden; background: #171614; }
   .editor-header { display: flex; align-items: center; gap: 10px; padding: 14px 20px 10px; border-bottom: 1px solid #222120; }
   .title-input { flex: 1; background: transparent; border: none; color: #e8e7e4;
@@ -401,12 +490,7 @@
   .editor-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .save-status { font-size: 0.75rem; color: #4f98a3; min-width: 50px; text-align: right; }
 
-  .btn-danger { width: 32px; height: 32px; border-radius: 7px; border: 1px solid #393836;
-    background: transparent; color: #636260; cursor: pointer; display: grid; place-items: center;
-    transition: background 140ms, color 140ms, border-color 140ms; }
-  .btn-danger:hover { background: #3a1a1a; border-color: #7a2020; color: #e06060; }
-  .btn-danger svg { width: 15px; height: 15px; }
-
+  /* Tabs */
   .tabs-bar { display: flex; align-items: center; gap: 2px; padding: 0 16px;
     border-bottom: 1px solid #222120; background: #1a1917; overflow-x: auto;
     scrollbar-width: none; min-height: 38px; }
@@ -415,8 +499,8 @@
     border: 1px solid transparent; border-bottom: none; transition: background 140ms; }
   .tab-wrap.tab-active { background: #171614; border-color: #2a2927; border-bottom-color: #171614; }
   .tab-wrap:not(.tab-active):hover { background: #202020; }
-  .tab-btn { padding: 6px 12px; background: none; border: none; color: #797876; cursor: pointer;
-    font: 500 0.8rem 'Inter', sans-serif; white-space: nowrap; transition: color 140ms; }
+  .tab-btn { padding: 6px 10px 6px 12px; background: none; border: none; color: #797876;
+    cursor: pointer; font: 500 0.8rem 'Inter', sans-serif; white-space: nowrap; transition: color 140ms; }
   .tab-wrap.tab-active .tab-btn { color: #d8d7d4; }
   .tab-close { width: 18px; height: 18px; padding: 0; margin-right: 4px; background: none; border: none;
     color: #555350; cursor: pointer; font-size: 0.9rem; line-height: 1; display: grid; place-items: center;
@@ -432,6 +516,7 @@
     font: 400 0.95rem/1.75 'Inter', sans-serif; resize: none; outline: none; }
   .editor-body textarea::placeholder { color: #333230; }
 
+  /* Empty state */
   .no-note { flex: 1; display: flex; flex-direction: column; align-items: center;
     justify-content: center; gap: 14px; color: #525150; padding: 40px; }
   .no-note-icon svg { width: 56px; height: 56px; color: #2d2c2a; }
