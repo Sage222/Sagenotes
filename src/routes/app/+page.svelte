@@ -257,12 +257,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 </svelte:head>
 
-<!-- Mobile sidebar toggle -->
-<button class="mobile-toggle" on:click={toggleSidebar} aria-label="Toggle sidebar">
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-    <path d="M3 12h18M3 6h18M3 18h18"/>
-  </svg>
-</button>
 {#if sidebarOpen}
   <div class="overlay" on:click={closeSidebar} aria-hidden="true"></div>
 {/if}
@@ -274,6 +268,14 @@
     <!-- Brand header — fixed at top -->
     <div class="sidebar-top">
       <div class="sidebar-brand">
+        <!-- Mobile close/open toggle — lives inside sidebar, no overlap -->
+        <button class="btn-icon btn-mobile-toggle" on:click={toggleSidebar} aria-label={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}>
+          {#if sidebarOpen}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          {:else}
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+          {/if}
+        </button>
         <svg class="brand-icon" viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M8 10C8 7.8 9.8 6 12 6H29a3 3 0 0 1 3 3v19c0 1.1-.9 2-2 2H12a4 4 0 0 0-4 4V10Z"/>
           <path d="M13 10h13M13 16h15M13 22h9"/>
@@ -310,7 +312,7 @@
             {:else}
               <span class="chevron-placeholder"></span>
             {/if}
-            <button class="note-item" on:click={() => (selectedId = note.id)} aria-current={note.id === selectedId ? 'page' : undefined}>
+            <button class="note-item" on:click={() => { selectedId = note.id; closeSidebar(); }} aria-current={note.id === selectedId ? 'page' : undefined}>
               <span class="note-title">{note.title || 'Untitled'}</span>
             </button>
             <div class="note-actions">
@@ -328,7 +330,7 @@
               {#each note.children as child (child.id)}
                 <div class="note-row sub-row" class:active={child.id === selectedId}>
                   <span class="chevron-placeholder"></span>
-                  <button class="note-item" on:click={() => (selectedId = child.id)} aria-current={child.id === selectedId ? 'page' : undefined}>
+                  <button class="note-item" on:click={() => { selectedId = child.id; closeSidebar(); }} aria-current={child.id === selectedId ? 'page' : undefined}>
                     <span class="sub-dot" aria-hidden="true"></span>
                     <span class="note-title">{child.title || 'Untitled'}</span>
                   </button>
@@ -403,6 +405,9 @@
   <main class="editor-pane">
     {#if selectedId}
       <div class="editor-header">
+        <button class="btn-icon editor-menu-btn" on:click={toggleSidebar} aria-label="Open sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
         <input class="title-input" bind:value={title} on:input={queueSave} placeholder="Note title" aria-label="Note title" />
         <span class="save-status" aria-live="polite">{saving ? 'Saving…' : ''}</span>
       </div>
@@ -773,43 +778,42 @@
 
   /* Mobile: sidebar collapses, toggle button appears */
   @media (max-width: 640px) {
+    /* Editor takes full width; sidebar floats over it */
     .shell {
       grid-template-columns: 1fr !important;
     }
     .sidebar {
       position: fixed;
       left: 0; top: 0; bottom: 0;
-      width: var(--sidebar-w, 260px) !important;
-      max-width: 85vw;
+      width: 280px;
+      max-width: 88vw;
       transform: translateX(-100%);
-      transition: transform 200ms cubic-bezier(0.16,1,0.3,1);
+      transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
       z-index: 100;
-      box-shadow: 4px 0 24px oklch(0 0 0 / 0.4);
+      box-shadow: 4px 0 32px oklch(0 0 0 / 0.5);
     }
     .sidebar.open {
       transform: translateX(0);
     }
     .resizer { display: none; }
-    .mobile-toggle {
-      display: flex !important;
+    /* Show ☰/✕ toggle inside the sidebar brand bar */
+    .btn-mobile-toggle {
+      display: grid !important;
+      flex-shrink: 0;
     }
+    /* Show dim overlay when sidebar open */
     .overlay {
       display: block !important;
     }
+    /* On mobile, editor needs a small top bar for the hamburger equivalent */
+    /* We show a menu button in the editor header area */
+    .editor-mobile-bar {
+      display: flex !important;
+    }
   }
-  .mobile-toggle {
+  /* btn-mobile-toggle: hidden on desktop, shown on mobile inside sidebar brand bar */
+  .btn-mobile-toggle {
     display: none;
-    position: fixed;
-    top: 14px; left: 14px;
-    z-index: 99;
-    width: 36px; height: 36px;
-    background: #1c1b19;
-    border: 1px solid #393836;
-    border-radius: 8px;
-    color: #cdccca;
-    cursor: pointer;
-    align-items: center;
-    justify-content: center;
   }
   .overlay {
     display: none;
@@ -817,6 +821,18 @@
     inset: 0;
     background: oklch(0 0 0 / 0.5);
     z-index: 99;
+  }
+
+
+  /* Mobile editor menu button — hidden on desktop */
+  .editor-menu-btn {
+    display: none;
+    flex-shrink: 0;
+  }
+  @media (max-width: 640px) {
+    .editor-menu-btn {
+      display: grid !important;
+    }
   }
 
 </style>
