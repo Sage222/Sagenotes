@@ -1,6 +1,6 @@
 # SageNotes
 
-A minimal self-hosted notes app — left sidebar, right editor, dark UI, search, login.
+A minimal self-hosted notes app — left sidebar, right editor, dark UI, search, tabs, recycle bin, login.
 
 ## Stack
 
