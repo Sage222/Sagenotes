@@ -5,7 +5,6 @@ import { requireUser } from "$lib/server/auth";
 export async function POST({ request }) {
   const userId = requireUser(request);
   const body = await request.json();
-  // verify note belongs to user
   const note = await prisma.note.findFirst({ where: { id: body.noteId, userId } });
   if (!note) return json({ error: "Not found" }, { status: 404 });
   const count = await prisma.tab.count({ where: { noteId: body.noteId } });
