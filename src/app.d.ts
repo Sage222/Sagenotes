@@ -1,8 +1,10 @@
 declare global {
   namespace App {
     interface Locals {
-      user: { id: string; username: string } | null;
+      userId?: string;
+      username?: string;
     }
   }
 }
+
 export {};
